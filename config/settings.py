@@ -39,6 +39,8 @@ INSTALLED_APPS = [
 
     # Local apps
     "accounts",
+    "wallet.apps.WalletConfig",
+
 ]
 
 MIDDLEWARE = [

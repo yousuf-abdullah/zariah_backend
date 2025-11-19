@@ -11,4 +11,7 @@ urlpatterns = [
 
     # DRF browsable login/logout
     path("api-auth/", include("rest_framework.urls")),
+
+    # wallet (gold holdings) endpoints
+    path("api/wallet/", include("wallet.urls")),
 ]
