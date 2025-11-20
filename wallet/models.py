@@ -4,8 +4,15 @@ from decimal import Decimal
 
 
 class Wallet(models.Model):
-    
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    """
+    One wallet per user.
+    Gold is stored in grams as the canonical unit with 8dp precision
+    """
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="wallet",
+    )
     gold_balance = models.DecimalField(
         max_digits=20,
         decimal_places=8,
@@ -21,6 +28,8 @@ class LedgerEntry(models.Model):
     """
     Immutable audit record of changes in gold holdings.
     E.g. BUY adds gold, SELL removes gold, ADJUST/REFERRAL modify balance.
+
+    All gold quantities are stored in grams for consistency.
     """
     TRANSACTION_TYPES = [
         ("BUY", "Buy Gold"),
@@ -40,14 +49,14 @@ class LedgerEntry(models.Model):
     gold_delta = models.DecimalField(
         max_digits=20,
         decimal_places=8,
-        help_text="Change in gold quantity. Positive for buy/credit, negative for sell/debit.",
+        help_text="Change in gold quantity. Positive for buy/credit, negative for sell/debit (in grams).",
     )
 
     # Gold balance after this entry
     gold_balance_after = models.DecimalField(
         max_digits=20,
         decimal_places=8,
-        help_text="Gold balance after applying this ledger entry.",
+        help_text="Gold balance after applying this ledger entry (in grams).",
     )
 
     # Optional fiat information for audit/statement purposes only

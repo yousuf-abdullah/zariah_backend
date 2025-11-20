@@ -23,9 +23,10 @@ class WalletLedgerView(generics.GenericAPIView):
     """
     serializer_class = LedgerSerializer
     permission_classes = [permissions.IsAuthenticated]
+    queryset = Wallet.objects.all()          # 👈 add this line
 
     def get(self, request):
         wallet = Wallet.objects.get(user=request.user)
-        ledger_qs = wallet.ledger.all()
+        ledger_qs = wallet.ledger.all().order_by("-created_at")  # optional: ensure newest first
         serializer = self.get_serializer(ledger_qs, many=True)
         return Response(serializer.data)
