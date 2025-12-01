@@ -14,4 +14,7 @@ urlpatterns = [
 
     # wallet (gold holdings) endpoints
     path("api/wallet/", include("wallet.urls")),
+
+    # gold price fetch
+    path("api/market/", include("market.urls")),
 ]
