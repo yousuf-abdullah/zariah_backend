@@ -1,22 +1,38 @@
 from django.contrib import admin
-from .models import Wallet, LedgerEntry
+from .models import BuyOrder, SellOrder, Wallet
 
 
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
-    list_display = ("user", "gold_balance")
+    list_display = ("user", "gold_balance_grams", "tola", "milligrams", "updated_at")
+    search_fields = ("user__email", "user__phone")
 
 
-@admin.register(LedgerEntry)
-class LedgerEntryAdmin(admin.ModelAdmin):
+@admin.register(BuyOrder)
+class BuyOrderAdmin(admin.ModelAdmin):
     list_display = (
-        "wallet",
-        "transaction_type",
-        "gold_delta",
-        "gold_balance_after",
-        "fiat_amount",
-        "fiat_currency",
-        "created_at",
+        "user",
+        "locked_price_per_gram",
+        "gold_quantity_grams",
+        "status",
+        "locked_at",
+        "expires_at",
+        "executed_at",
     )
-    list_filter = ("transaction_type", "fiat_currency")
-    search_fields = ("wallet__user__email", "description")
+    list_filter = ("status",)
+    search_fields = ("user__email", "user__phone", "order_token")
+
+
+@admin.register(SellOrder)
+class SellOrderAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "locked_price_per_gram",
+        "gold_quantity_grams",
+        "status",
+        "locked_at",
+        "expires_at",
+        "executed_at",
+    )
+    list_filter = ("status",)
+    search_fields = ("user__email", "user__phone", "order_token")

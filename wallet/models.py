@@ -1,83 +1,147 @@
 from django.db import models
 from django.conf import settings
 from decimal import Decimal
+from django.utils import timezone
 
 
+GRAM_PER_TOLA = Decimal("11.6638038")
+MILLIGRAM = Decimal("0.001")  # For micro-purchases
+
+
+# ----------------------------------------------------
+# WALLET (Stores gold balance)
+# ----------------------------------------------------
 class Wallet(models.Model):
-    """
-    One wallet per user.
-    Gold is stored in grams as the canonical unit with 8dp precision
-    """
-    user = models.OneToOneField(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="wallet",
-    )
-    gold_balance = models.DecimalField(
-        max_digits=20,
-        decimal_places=8,
-        default=Decimal("0"),
-        help_text="Total gold held by the user (in grams, 8 decimal precision).",
-    )
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    gold_balance_grams = models.DecimalField(max_digits=20, decimal_places=6, default=Decimal("0.0"))
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.user.email} - {self.gold_balance} g"
+        return f"Wallet for {self.user}"
+
+    # Display Helpers
+    def grams(self):
+        return self.gold_balance_grams
+
+    def tola(self):
+        return self.gold_balance_grams / GRAM_PER_TOLA
+
+    def milligrams(self):
+        return self.gold_balance_grams * Decimal("1000")
 
 
-class LedgerEntry(models.Model):
-    """
-    Immutable audit record of changes in gold holdings.
-    E.g. BUY adds gold, SELL removes gold, ADJUST/REFERRAL modify balance.
+# ----------------------------------------------------
+# WALLET TRANSACTIONS (Immutable ledger)
+# ----------------------------------------------------
+class WalletTransaction(models.Model):
+    CREDIT = "CREDIT"
+    DEBIT = "DEBIT"
 
-    All gold quantities are stored in grams for consistency.
-    """
     TRANSACTION_TYPES = [
-        ("BUY", "Buy Gold"),
-        ("SELL", "Sell Gold"),
-        ("ADJUST", "Admin Adjustment"),
-        ("REFERRAL", "Referral Gold Credit"),
+        (CREDIT, "Credit"),
+        (DEBIT, "Debit"),
     ]
 
-    wallet = models.ForeignKey(
-        Wallet,
-        on_delete=models.CASCADE,
-        related_name="ledger",
-    )
-    transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPES)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE)
+    tx_type = models.CharField(max_length=6, choices=TRANSACTION_TYPES)
 
-    # Gold change: positive for added, negative for removed
-    gold_delta = models.DecimalField(
-        max_digits=20,
-        decimal_places=8,
-        help_text="Change in gold quantity. Positive for buy/credit, negative for sell/debit (in grams).",
-    )
+    gold_amount_grams = models.DecimalField(max_digits=20, decimal_places=6)
+    balance_after_tx = models.DecimalField(max_digits=20, decimal_places=6)
 
-    # Gold balance after this entry
-    gold_balance_after = models.DecimalField(
-        max_digits=20,
-        decimal_places=8,
-        help_text="Gold balance after applying this ledger entry (in grams).",
-    )
+    reference = models.CharField(max_length=100, blank=True, null=True)  # order ID
+    timestamp = models.DateTimeField(default=timezone.now)
 
-    # Optional fiat information for audit/statement purposes only
-    fiat_amount = models.DecimalField(
-        max_digits=20,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text="Fiat value (e.g. PKR) of this operation, for audit only.",
-    )
-    fiat_currency = models.CharField(
-        max_length=3,
-        default="PKR",
-        help_text="ISO currency code, e.g. PKR.",
-    )
-
-    description = models.CharField(max_length=255, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    idempotency_key = models.CharField(max_length=200, unique=True)
 
     class Meta:
-        ordering = ["-created_at"]
+        ordering = ["-timestamp"]
 
     def __str__(self):
-        return f"{self.transaction_type} {self.gold_delta} g"
+        return f"{self.tx_type} {self.gold_amount_grams}g → bal {self.balance_after_tx}g"
+
+
+# ----------------------------------------------------
+# BUY ORDER
+# ----------------------------------------------------
+class BuyOrder(models.Model):
+    STATUS_PENDING_LOCKED = "PENDING_LOCKED"
+    STATUS_EXECUTED = "EXECUTED"
+    STATUS_EXPIRED = "EXPIRED"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING_LOCKED, "Pending Locked"),
+        (STATUS_EXECUTED, "Executed"),
+        (STATUS_EXPIRED, "Expired"),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE)
+
+    # Amount of gold user wants (in grams)
+    gold_quantity_grams = models.DecimalField(max_digits=20, decimal_places=6)
+
+    # Snapshot reference for audit only
+    snapshot_reference = models.ForeignKey(
+        "market.GoldPriceSnapshot",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    # Locked values
+    locked_price_per_gram = models.DecimalField(max_digits=20, decimal_places=4)
+    total_pkr = models.DecimalField(max_digits=20, decimal_places=2)
+
+    expires_at = models.DateTimeField(null=True, blank=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    order_token = models.CharField(max_length=50, unique=True, null=True)
+
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING_LOCKED)
+    executed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Buy {self.gold_quantity_grams}g @ {self.locked_price_per_gram}"
+
+# ----------------------------------------------------
+# SELL ORDER
+# ----------------------------------------------------
+class SellOrder(models.Model):
+    STATUS_PENDING_LOCKED = "PENDING_LOCKED"
+    STATUS_EXECUTED = "EXECUTED"
+    STATUS_EXPIRED = "EXPIRED"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING_LOCKED, "Pending Locked"),
+        (STATUS_EXECUTED, "Executed"),
+        (STATUS_EXPIRED, "Expired"),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE)
+
+    gold_quantity_grams = models.DecimalField(max_digits=20, decimal_places=6)
+    snapshot_reference = models.ForeignKey(
+        "market.GoldPriceSnapshot",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    locked_price_per_gram = models.DecimalField(max_digits=20, decimal_places=4)
+    total_pkr = models.DecimalField(max_digits=20, decimal_places=2)
+
+    expires_at = models.DateTimeField(null=True, blank=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    order_token = models.CharField(max_length=50, unique=True, null=True)
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING_LOCKED)
+    executed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Sell {self.gold_quantity_grams}g @ {self.locked_price_per_gram}"
+

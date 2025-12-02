@@ -38,11 +38,13 @@ INSTALLED_APPS = [
     # Third-party
     "rest_framework",
 
+    # Project config (scheduler boot)
+    "config.apps.ConfigConfig",
+
     # Local apps
     "accounts",
     "wallet.apps.WalletConfig",
     "market",
-
 ]
 
 MIDDLEWARE = [

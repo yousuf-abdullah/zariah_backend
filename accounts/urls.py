@@ -1,7 +1,8 @@
 from django.urls import path
-from .views import RegisterView, MeView
 
+# Placeholder auth URLs
 urlpatterns = [
-    path("register/", RegisterView.as_view(), name="register"),
-    path("me/", MeView.as_view(), name="me"),
+    # path("login/", LoginView.as_view()),
+    # path("logout/", LogoutView.as_view()),
+    # path("refresh/", RefreshTokenView.as_view()),
 ]

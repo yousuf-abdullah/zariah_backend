@@ -10,7 +10,7 @@ class User(AbstractUser):
     but we add fields we know we'll need later.
     """
 
-    phone_number = models.CharField(max_length=20, blank=True, null=True)
+    phone = models.CharField(max_length=20, blank=True, null=True)
     is_kyc_bypassed = models.BooleanField(default=False)
 
     def __str__(self):
@@ -41,6 +41,7 @@ class KYCProfile(models.Model):
         choices=KYCStatus.choices,
         default=KYCStatus.PENDING,
     )
+    is_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

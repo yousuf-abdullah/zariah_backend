@@ -1,42 +1,35 @@
 from django.utils import timezone
 from .services import GoldPriceService
-from .models import GoldPriceSnapshot, DailyClosingPrice
+from .models import DailyClosingPrice, GoldPriceSnapshot
 
 
 def fetch_gold_snapshot():
     """
-    Fetches gold spot + USD/PKR & stores a snapshot.
-    Runs every 60 seconds (via APScheduler).
+    Runs every 60 seconds via APScheduler:
+    - Fetch live gold price & USD/PKR rate
+    - Compute PKR values (raw + final)
+    - Store ONE snapshot
     """
-    service = GoldPriceService()
-    data = service.get_snapshot()
+    try:
+        service = GoldPriceService()
+        snapshot = service.fetch_and_store_snapshot()
 
-    GoldPriceSnapshot.objects.create(
-        timestamp=timezone.now(),
+        print(f"[APScheduler] Snapshot saved @ {snapshot.timestamp}")
 
-        usd_per_ounce=data["usd_per_ounce"],
-        usd_pkr_rate=data["usd_pkr_rate"],
-
-        pkr_per_ounce_raw=data["pkr_per_ounce_raw"],
-        pkr_per_gram_raw=data["pkr_per_gram_raw"],
-        pkr_per_tola_raw=data["pkr_per_tola_raw"],
-
-        pkr_per_ounce_final=data["pkr_per_ounce_final"],
-        pkr_per_gram_final=data["pkr_per_gram_final"],
-        pkr_per_tola_final=data["pkr_per_tola_final"],
-    )
-
-    print("[APScheduler] Snapshot saved.")
+    except Exception as e:
+        print(f"[APScheduler] ERROR in fetch_gold_snapshot: {e}")
 
 
 def generate_daily_closing_price():
     """
-    Saves the last snapshot for the day.
-    Runs at 23:59 (via APScheduler).
+    Runs once per day at 23:59:
+    - Picks the last snapshot of the day
+    - Stores daily closing prices
     """
     today = timezone.localdate()
     last_snapshot = (
-        GoldPriceSnapshot.objects.filter(timestamp__date=today)
+        GoldPriceSnapshot.objects
+        .filter(timestamp__date=today)
         .order_by("-timestamp")
         .first()
     )
@@ -55,4 +48,4 @@ def generate_daily_closing_price():
         },
     )
 
-    print("[APScheduler] Daily closing price saved.")
+    print(f"[APScheduler] Daily closing price saved for {today}.")
