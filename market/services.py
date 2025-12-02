@@ -1,186 +1,113 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict
-
+from decimal import Decimal
+import yfinance as yf
 from django.utils import timezone
-
-import yfinance as yf  # type: ignore
-
-from .models import GoldPriceConfig
-
-
-# ---------- Helpers ----------
-
-
-def _to_decimal(value) -> Decimal:
-    """
-    Convert floats / np types to Decimal safely via string.
-    """
-    return Decimal(str(value))
-
-
-def _round4(value: Decimal) -> Decimal:
-    """
-    Round to 4 decimal places for storage / API.
-    """
-    return value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-
-
-@dataclass
-class GoldPriceSnapshot:
-    """
-    Computed prices in PKR for different units.
-    All values already include safeguard and spreads.
-    """
-    spot_ounce_usd: Decimal
-    usd_pkr: Decimal
-
-    mid_price_per_gram_pkr: Decimal  # internal for-sale price (after safeguard)
-    buy_price_per_gram_pkr: Decimal  # user pays this when buying
-    sell_price_per_gram_pkr: Decimal  # user receives this when selling
-
-    gram_per_tola: Decimal
-    ounce_to_gram: Decimal
-
-    @property
-    def as_dict(self) -> Dict:
-        """
-        Shape we will return from the API.
-        """
-        gram = {
-            "mid": _round4(self.mid_price_per_gram_pkr),
-            "buy": _round4(self.buy_price_per_gram_pkr),
-            "sell": _round4(self.sell_price_per_gram_pkr),
-        }
-
-        tola_grams = self.gram_per_tola
-        ounce_grams = self.ounce_to_gram
-
-        def scale(unit_grams: Decimal) -> Dict[str, Decimal]:
-            return {
-                "mid": _round4(self.mid_price_per_gram_pkr * unit_grams),
-                "buy": _round4(self.buy_price_per_gram_pkr * unit_grams),
-                "sell": _round4(self.sell_price_per_gram_pkr * unit_grams),
-            }
-
-        return {
-            "meta": {
-                "spot_ounce_usd": _round4(self.spot_ounce_usd),
-                "usd_pkr": _round4(self.usd_pkr),
-                "gram_per_tola": _round4(self.gram_per_tola),
-                "ounce_to_gram": _round4(self.ounce_to_gram),
-            },
-            "per_gram": gram,
-            "per_tola": scale(tola_grams),
-            "per_ounce": scale(ounce_grams),
-        }
+from .models import GoldPriceSnapshot
 
 
 class GoldPriceService:
     """
-    Encapsulates the business logic for converting international spot price
-    into PKR prices (gram / tola / ounce) with safeguard & spreads applied.
-
-    High level steps:
-
-    1) Fetch USD/PKR FX rate (yfinance, USDPKR=X)
-    2) Fetch XAUUSD spot price per troy ounce (yfinance, XAUUSD=X)
-    3) Convert ounce price (USD) -> PKR/gram
-    4) Add safeguard margin (config.safety_margin_pct) => mid price
-    5) Add buy spread (config.buy_spread_pct) => buy price
-       Sell price = mid price (for now, no extra sell spread)
+    Service for fetching gold prices, converting units, applying safeguard and spread margins.
+    Uses free & legal Yahoo Finance endpoints:
+    - GC=F  : COMEX Gold Futures (USD/oz)
+    - PKR=X : USD→PKR FX rate
     """
 
-    FX_SYMBOL = "USDPKR=X"     # USD/PKR from yfinance
-    GOLD_SYMBOL = "XAUUSD=X"   # Gold spot XAUUSD from yfinance
+    OUNCE_TO_TOLA = Decimal("2.430555")  # 1 tola = 11.664g → 1oz = 31.1035g → oz/tola ratio
+    OUNCE_TO_GRAM = Decimal("31.1035")
 
-    def __init__(self, config: GoldPriceConfig | None = None) -> None:
-        self.config = config or GoldPriceConfig.get_active()
+    def __init__(self):
+        pass
 
-    # ---- External data fetchers ----
-
-    def _fetch_usd_pkr_rate(self) -> Decimal:
+    # ------------------------------------------------------------
+    # FETCH USD → PKR FX RATE
+    # ------------------------------------------------------------
+    def _fetch_usd_pkr(self) -> Decimal:
         """
-        Fetch USD/PKR rate from yfinance.
+        Fetch USD to PKR conversion using Yahoo Finance (PKR=X)
         """
-        ticker = yf.Ticker(self.FX_SYMBOL)
+        ticker = yf.Ticker("PKR=X")
         hist = ticker.history(period="1d")
-        if hist.empty:
-            raise RuntimeError("Could not fetch USD/PKR rate from yfinance.")
-        last_close = hist["Close"].iloc[-1]
-        return _to_decimal(last_close)
 
-    def _fetch_spot_ounce_usd(self) -> Decimal:
+        if hist.empty:
+            raise RuntimeError("Could not fetch USD/PKR rate (PKR=X).")
+
+        fx = hist["Close"].iloc[-1]
+        return Decimal(str(fx)).quantize(Decimal("0.0001"))
+
+    # ------------------------------------------------------------
+    # FETCH GOLD PRICE (USD PER OUNCE)
+    # ------------------------------------------------------------
+    def _fetch_future_gold_ounce_usd(self) -> Decimal:
         """
-        Fetch XAUUSD spot (USD per troy ounce) from yfinance.
+        Fetch COMEX Gold Futures (GC=F) as a proxy for spot gold.
+        This is free, legal, stable, and serves well for dev environments.
         """
-        ticker = yf.Ticker(self.GOLD_SYMBOL)
+        ticker = yf.Ticker("GC=F")
         hist = ticker.history(period="1d")
+
         if hist.empty:
-            raise RuntimeError("Could not fetch XAUUSD spot price from yfinance.")
-        last_close = hist["Close"].iloc[-1]
-        return _to_decimal(last_close)
+            raise RuntimeError("Could not fetch GC=F gold futures price.")
 
-    # ---- Public API ----
+        price = hist["Close"].iloc[-1]
+        return Decimal(str(price)).quantize(Decimal("0.01"))
 
+    # ------------------------------------------------------------
+    # MAIN SNAPSHOT BUILDER
+    # ------------------------------------------------------------
     def get_snapshot(self) -> GoldPriceSnapshot:
         """
-        Get a GoldPriceSnapshot, optionally reusing cached data based on config.
+        Fetches:
+        - Gold price (USD/oz)
+        - USD→PKR FX rate
+        Converts to:
+        - PKR/oz
+        - PKR/tola
+        - PKR/gm
+
+        Applies:
+        - safeguard % (configurable in DB)
+        - spread % (configurable)
+
+        Saves snapshot to DB and returns it.
         """
 
-        if not self.config.should_refresh_cache():
-            # Use cached values
-            if (
-                self.config.last_spot_ounce_usd is not None
-                and self.config.last_usd_pkr is not None
-            ):
-                spot_ounce_usd = self.config.last_spot_ounce_usd
-                usd_pkr = self.config.last_usd_pkr
-            else:
-                # Fallback: force refresh
-                spot_ounce_usd = self._fetch_spot_ounce_usd()
-                usd_pkr = self._fetch_usd_pkr_rate()
-        else:
-            spot_ounce_usd = self._fetch_spot_ounce_usd()
-            usd_pkr = self._fetch_usd_pkr_rate()
+        # Fetch base prices
+        usd_per_ounce = self._fetch_future_gold_ounce_usd()
+        usd_pkr_rate = self._fetch_usd_pkr()
 
-            # update cache in DB
-            self.config.last_spot_ounce_usd = spot_ounce_usd
-            self.config.last_usd_pkr = usd_pkr
-            self.config.last_computed_at = timezone.now()
-            self.config.save(update_fields=[
-                "last_spot_ounce_usd",
-                "last_usd_pkr",
-                "last_computed_at",
-            ])
+        # Conversions
+        pkr_per_ounce = (usd_per_ounce * usd_pkr_rate).quantize(Decimal("1.0000"))
+        pkr_per_gram = (pkr_per_ounce / self.OUNCE_TO_GRAM).quantize(Decimal("1.0000"))
+        pkr_per_tola = (pkr_per_ounce / self.OUNCE_TO_TOLA).quantize(Decimal("1.0000"))
 
-        ounce_to_gram = self.config.ounce_to_gram
-        gram_per_tola = self.config.gram_per_tola
+        # Load margins from DB — create if none exists
+        from .models import GoldPriceConfig
+        config = GoldPriceConfig.get_solo()
 
-        # Step 3: USD/ounce -> PKR/gram
-        # (spot_ounce_usd * usd_pkr) gives PKR per ounce.
-        pkr_per_ounce = spot_ounce_usd * usd_pkr
-        base_pkr_per_gram = pkr_per_ounce / ounce_to_gram
+        # Safeguard margin
+        safeguard_multiplier = (Decimal("1") + config.safeguard_margin / Decimal("100"))
+        pkr_per_ounce_safeguarded = (pkr_per_ounce * safeguard_multiplier).quantize(Decimal("1.0000"))
 
-        # Step 4: add safeguard margin
-        safety_factor = Decimal("1") + (self.config.safety_margin_pct / Decimal("100"))
-        mid_price_per_gram = base_pkr_per_gram * safety_factor
+        # Spread margin
+        spread_multiplier = (Decimal("1") + config.spread_margin / Decimal("100"))
+        pkr_per_ounce_with_spread = (pkr_per_ounce_safeguarded * spread_multiplier).quantize(Decimal("1.0000"))
 
-        # Step 5: buy spread
-        buy_factor = Decimal("1") + (self.config.buy_spread_pct / Decimal("100"))
-        buy_price_per_gram = mid_price_per_gram * buy_factor
+        # Final selling prices for UI
+        final_price_ounce = pkr_per_ounce_with_spread
+        final_price_gram = (final_price_ounce / self.OUNCE_TO_GRAM).quantize(Decimal("1.0000"))
+        final_price_tola = (final_price_ounce / self.OUNCE_TO_TOLA).quantize(Decimal("1.0000"))
 
-        # For now: sell price = mid price (no additional sell spread)
-        sell_price_per_gram = mid_price_per_gram
-
-        return GoldPriceSnapshot(
-            spot_ounce_usd=spot_ounce_usd,
-            usd_pkr=usd_pkr,
-            mid_price_per_gram_pkr=mid_price_per_gram,
-            buy_price_per_gram_pkr=buy_price_per_gram,
-            sell_price_per_gram_pkr=sell_price_per_gram,
-            gram_per_tola=gram_per_tola,
-            ounce_to_gram=ounce_to_gram,
+        # Save snapshot
+        snapshot = GoldPriceSnapshot.objects.create(
+            timestamp=timezone.now(),
+            usd_per_ounce=usd_per_ounce,
+            usd_pkr_rate=usd_pkr_rate,
+            pkr_per_ounce_raw=pkr_per_ounce,
+            pkr_per_gram_raw=pkr_per_gram,
+            pkr_per_tola_raw=pkr_per_tola,
+            pkr_per_ounce_final=final_price_ounce,
+            pkr_per_gram_final=final_price_gram,
+            pkr_per_tola_final=final_price_tola,
         )
+
+        return snapshot
