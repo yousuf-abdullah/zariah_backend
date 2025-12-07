@@ -1,5 +1,6 @@
 from django.contrib import admin
 from .models import BuyOrder, SellOrder, Wallet
+from .audit_models import OrderAuditLog
 
 
 @admin.register(Wallet)

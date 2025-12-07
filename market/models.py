@@ -16,7 +16,8 @@ class GoldPriceConfig(models.Model):
     There will always be exactly one row of this model.
     """
     
-    lock_duration_seconds = models.IntegerField(default=60)
+    min_buy_amount_pkr = models.DecimalField(max_digits=20, decimal_places=2, default=Decimal("500.00"))
+    lock_duration_seconds = models.PositiveIntegerField(default=60)
 
     safeguard_margin = models.DecimalField(
         max_digits=5,
@@ -33,7 +34,7 @@ class GoldPriceConfig(models.Model):
     )
 
     def __str__(self):
-        return "Gold Price Configuration"
+        return f"Gold Config (min {self.min_buy_amount_pkr} PKR)"
 
     @classmethod
     def get_solo(cls):

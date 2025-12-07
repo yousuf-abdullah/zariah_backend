@@ -145,3 +145,14 @@ class SellOrder(models.Model):
     def __str__(self):
         return f"Sell {self.gold_quantity_grams}g @ {self.locked_price_per_gram}"
 
+class OrderAuditLog(models.Model):
+    order = models.ForeignKey("BuyOrder", on_delete=models.CASCADE, related_name="audit_logs")
+    action = models.CharField(max_length=100)
+    note = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.action} @ {self.created_at}"
