@@ -1,80 +1,181 @@
+from decimal import Decimal
+from uuid import uuid4
+from datetime import timedelta
+
+from django.utils import timezone
+from django.shortcuts import get_object_or_404
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
-from decimal import Decimal
+from rest_framework.permissions import IsAuthenticated
 
-from .models import Wallet, WalletTransaction
-from .services import WalletEngine
-from market.models import GoldPriceSnapshot
+from market.models import GoldPriceSnapshot, GoldPriceConfig
+
+from .models import Wallet, BuyOrder, SellOrder
+from .services import WalletEngine, InventoryEngine
 
 
-class WalletBalanceView(APIView):
-    def get(self, request):
-        wallet = request.user.wallet
+# -----------------------------
+# BUY — LOCK
+# -----------------------------
+class BuyLockView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        amount_pkr = Decimal(request.data.get("amount_pkr"))
+
+        config = GoldPriceConfig.load()
+        min_buy = config.min_buy_amount_pkr
+        fee_pct = config.buy_fee_percentage
+
+        if amount_pkr < min_buy:
+            return Response({"error": f"Minimum buy amount is {min_buy} PKR"}, status=400)
+
+        snapshot = GoldPriceSnapshot.objects.latest("timestamp")
+        price = snapshot.pkr_per_gram_final
+
+        grams = amount_pkr / price
+        fee_pkr = amount_pkr * fee_pct / 100
+        total_payable = amount_pkr + fee_pkr
+
+        InventoryEngine.reserve(grams)
+
+        order = BuyOrder.objects.create(
+            user=request.user,
+            wallet=request.user.wallet,
+            gold_quantity_grams=grams,
+            locked_price_per_gram=price,
+            fee_pkr=fee_pkr,
+            total_payable_pkr=total_payable,
+            soft_allocated_grams=grams,
+            snapshot_reference=snapshot,
+            locked_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(seconds=config.lock_duration_seconds),
+            order_token=str(uuid4()),
+        )
 
         return Response({
-            "grams": wallet.grams(),
-            "tola": wallet.tola(),
-            "milligrams": wallet.milligrams(),
+            "order_token": order.order_token,
+            "locked_price_per_gram": str(price),
+            "amount_pkr": str(amount_pkr),
+            "fee_pkr": str(fee_pkr),
+            "total_payable_pkr": str(total_payable),
+            "gold_quantity_grams": str(grams),
+            "expires_at": order.expires_at,
         })
 
 
-class WalletLedgerView(APIView):
-    def get(self, request):
-        wallet = request.user.wallet
-        tx = WalletTransaction.objects.filter(wallet=wallet).order_by("-timestamp")
+# -----------------------------
+# BUY — CONFIRM
+# -----------------------------
+class BuyConfirmView(APIView):
+    permission_classes = [IsAuthenticated]
 
-        data = [{
-            "type": t.tx_type,
-            "grams": str(t.gold_amount_grams),
-            "balance_after": str(t.balance_after_tx),
-            "reference": t.reference,
-            "timestamp": t.timestamp,
-        } for t in tx]
-
-        return Response(data)
-
-
-class BuyGoldView(APIView):
     def post(self, request):
-        try:
-            grams = Decimal(request.data.get("grams"))
-            snapshot_id = int(request.data.get("snapshot_id"))
-        except:
-            return Response({"error": "Invalid input"}, status=400)
+        token = request.data.get("order_token")
+        order = get_object_or_404(BuyOrder, order_token=token)
 
-        # Create buy order
-        order = WalletEngine.create_buy_order(request.user, grams, snapshot_id)
+        if order.status != BuyOrder.STATUS_PENDING_LOCKED:
+            return Response({"error": "Order cannot be confirmed"}, status=400)
 
-        # Execute buy
-        order = WalletEngine.execute_buy_order(order)
+        if timezone.now() > order.expires_at:
+            InventoryEngine.release(order.soft_allocated_grams)
+            order.status = BuyOrder.STATUS_EXPIRED
+            order.save()
+            return Response({"error": "Order expired"}, status=400)
+
+        InventoryEngine.release(order.soft_allocated_grams)
+        InventoryEngine.reduce_total(order.gold_quantity_grams)
+
+        WalletEngine.credit(order.wallet, order.gold_quantity_grams, reference=order.order_token)
+
+        order.status = BuyOrder.STATUS_EXECUTED
+        order.executed_at = timezone.now()
+        order.save()
 
         return Response({
-            "message": "Buy order executed",
-            "grams": str(order.gold_quantity_grams),
-            "price_per_gram": str(order.price_per_gram),
-            "total_pkr": str(order.total_pkr),
-        }, status=200)
+            "status": "success",
+            "gold_added_grams": str(order.gold_quantity_grams),
+            "wallet_balance_grams": str(order.wallet.gold_balance_grams),
+        })
 
 
-class SellGoldView(APIView):
+# -----------------------------
+# SELL — LOCK
+# -----------------------------
+class SellLockView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
-        try:
-            grams = Decimal(request.data.get("grams"))
-            snapshot_id = int(request.data.get("snapshot_id"))
-        except:
-            return Response({"error": "Invalid input"}, status=400)
+        grams = Decimal(request.data.get("sell_grams"))
+        wallet = request.user.wallet
 
-        try:
-            order = WalletEngine.create_sell_order(request.user, grams, snapshot_id)
-            order = WalletEngine.execute_sell_order(order)
+        if wallet.gold_balance_grams < grams:
+            return Response({"error": "Not enough gold to sell"}, status=400)
 
-            return Response({
-                "message": "Sell order executed",
-                "grams": str(order.gold_quantity_grams),
-                "price_per_gram": str(order.price_per_gram),
-                "total_pkr": str(order.total_pkr),
-            })
+        config = GoldPriceConfig.load()
+        fee_pct = config.sell_fee_percentage
 
-        except ValueError as e:
-            return Response({"error": str(e)}, status=400)
+        snapshot = GoldPriceSnapshot.objects.latest("timestamp")
+        price = snapshot.pkr_per_gram_final
+
+        gross_pkr = grams * price
+        fee_pkr = gross_pkr * fee_pct / 100
+        net_pkr = gross_pkr - fee_pkr
+
+        WalletEngine.debit(wallet, grams, reference="soft_sell_hold")
+
+        order = SellOrder.objects.create(
+            user=request.user,
+            wallet=wallet,
+            gold_quantity_grams=grams,
+            soft_allocated_grams=grams,
+            locked_price_per_gram=price,
+            fee_pkr=fee_pkr,
+            total_payable_pkr=net_pkr,
+            snapshot_reference=snapshot,
+            locked_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(seconds=config.lock_duration_seconds),
+            order_token=str(uuid4()),
+        )
+
+        return Response({
+            "order_token": order.order_token,
+            "sell_grams": str(grams),
+            "gross_pkr": str(gross_pkr),
+            "fee_pkr": str(fee_pkr),
+            "net_pkr": str(net_pkr),
+            "locked_price_per_gram": str(price),
+            "expires_at": order.expires_at
+        })
+
+
+# -----------------------------
+# SELL — CONFIRM
+# -----------------------------
+class SellConfirmView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        token = request.data.get("order_token")
+        order = get_object_or_404(SellOrder, order_token=token)
+
+        if order.status != SellOrder.STATUS_PENDING_LOCKED:
+            return Response({"error": "Order cannot be confirmed"}, status=400)
+
+        if timezone.now() > order.expires_at:
+            WalletEngine.credit(order.wallet, order.soft_allocated_grams, reference="sell_expire")
+            order.status = SellOrder.STATUS_EXPIRED
+            order.save()
+            return Response({"error": "Order expired"}, status=400)
+
+        InventoryEngine.increase_total(order.gold_quantity_grams)
+
+        order.status = SellOrder.STATUS_EXECUTED
+        order.executed_at = timezone.now()
+        order.save()
+
+        return Response({
+            "status": "success",
+            "net_pkr": str(order.total_payable_pkr),
+        })

@@ -1,9 +1,21 @@
 from django.urls import path
-from .views import WalletBalanceView, WalletLedgerView, BuyGoldView, SellGoldView
+
+from .views import (
+    WalletBalanceView,
+    WalletLedgerView,
+    BuyLockView,
+    BuyConfirmView,
+    SellLockView,
+    SellConfirmView,
+)
 
 urlpatterns = [
-    path("balance/", WalletBalanceView.as_view(), name="wallet-balance"),
-    path("ledger/", WalletLedgerView.as_view(), name="wallet-ledger"),
-    path("buy/", BuyGoldView.as_view(), name="wallet-buy"),
-    path("sell/", SellGoldView.as_view(), name="wallet-sell"),
+    path("balance/", WalletBalanceView.as_view()),
+    path("ledger/", WalletLedgerView.as_view()),
+
+    # NEW BUY/SELL SYSTEM
+    path("buy/lock/", BuyLockView.as_view()),
+    path("buy/confirm/", BuyConfirmView.as_view()),
+    path("sell/lock/", SellLockView.as_view()),
+    path("sell/confirm/", SellConfirmView.as_view()),
 ]

@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import BuyOrder, SellOrder, Wallet
+from .models import BuyOrder, SellOrder, Wallet, GoldInventory
 from .audit_models import OrderAuditLog
 
 
@@ -37,3 +37,5 @@ class SellOrderAdmin(admin.ModelAdmin):
     )
     list_filter = ("status",)
     search_fields = ("user__email", "user__phone", "order_token")
+
+admin.site.register(GoldInventory)
