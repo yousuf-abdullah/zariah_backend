@@ -8,15 +8,16 @@ from django.utils import timezone
 # --------------------------------------------
 class GoldPriceConfig(models.Model):
     """
-    Stores admin-adjustable margins for gold pricing.
-
-    safeguard_margin (%): Added on top of raw PKR price before spread
-    spread_margin (%): Added after safeguard to get BUY price
-
-    There will always be exactly one row of this model.
+    Stores admin-adjustable margins and fees for gold pricing.
+    There must always be exactly ONE active row.
     """
-    
-    min_buy_amount_pkr = models.DecimalField(max_digits=20, decimal_places=2, default=Decimal("500.00"))
+
+    min_buy_amount_pkr = models.DecimalField(
+        max_digits=20,
+        decimal_places=2,
+        default=Decimal("500.00")
+    )
+
     lock_duration_seconds = models.PositiveIntegerField(default=60)
 
     safeguard_margin = models.DecimalField(
@@ -33,54 +34,74 @@ class GoldPriceConfig(models.Model):
         help_text="Percentage added after safeguard margin."
     )
 
+    # FEES
+    buy_fee_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("3.00")
+    )
+
+    sell_fee_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("0.00")
+    )
+
+    is_active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
     def __str__(self):
         return f"Gold Config (min {self.min_buy_amount_pkr} PKR)"
 
     @classmethod
-    def get_solo(cls):
-        """
-        Ensures there is always exactly one GoldPriceConfig row.
-        """
-        obj, _ = cls.objects.get_or_create(id=1)
-        return obj
+    def load(cls):
+        config = cls.objects.filter(is_active=True).order_by("-updated_at").first()
+        if not config:
+            raise RuntimeError("GoldPriceConfig is not configured.")
+        return config
+
+    def save(self, *args, **kwargs):
+        if self.is_active:
+            GoldPriceConfig.objects.exclude(pk=self.pk).update(is_active=False)
+        super().save(*args, **kwargs)
 
 
 # --------------------------------------------
-# GOLD PRICE SNAPSHOTS (Every 60 seconds)
+# GOLD PRICE SNAPSHOT (Every minute)
 # --------------------------------------------
 class GoldPriceSnapshot(models.Model):
     timestamp = models.DateTimeField(default=timezone.now)
 
-    # Raw data
     usd_per_ounce = models.DecimalField(max_digits=14, decimal_places=4)
     usd_pkr_rate = models.DecimalField(max_digits=14, decimal_places=4)
 
-    # Raw PKR conversions
-    pkr_per_ounce_raw = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
-    pkr_per_gram_raw = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
-    pkr_per_tola_raw = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    pkr_per_ounce_raw = models.DecimalField(max_digits=18, decimal_places=4)
+    pkr_per_gram_raw = models.DecimalField(max_digits=18, decimal_places=4)
+    pkr_per_tola_raw = models.DecimalField(max_digits=18, decimal_places=4)
 
-    # Final PKR values (after margins)
-    pkr_per_ounce_final = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
-    pkr_per_gram_final = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
-    pkr_per_tola_final = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    pkr_per_ounce_final = models.DecimalField(max_digits=18, decimal_places=4)
+    pkr_per_gram_final = models.DecimalField(max_digits=18, decimal_places=4)
+    pkr_per_tola_final = models.DecimalField(max_digits=18, decimal_places=4)
 
     def __str__(self):
-        return f"Gold Snapshot @ {self.timestamp}"
+        return f"Snapshot @ {self.timestamp}"
 
 
 # --------------------------------------------
-# DAILY CLOSING PRICE (Stored once per day)
+# DAILY CLOSING PRICE (Once per day)
 # --------------------------------------------
 class DailyClosingPrice(models.Model):
     date = models.DateField(unique=True)
+
     closing_ounce = models.DecimalField(max_digits=14, decimal_places=4)
     closing_gram = models.DecimalField(max_digits=14, decimal_places=4)
     closing_tola = models.DecimalField(max_digits=14, decimal_places=4)
 
     source_snapshot = models.ForeignKey(
         GoldPriceSnapshot,
-        on_delete=models.SET_NULL,
+        on_delete=models.CASCADE,
         null=True,
         blank=True
     )

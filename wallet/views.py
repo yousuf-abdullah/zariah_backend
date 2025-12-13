@@ -11,9 +11,8 @@ from rest_framework.permissions import IsAuthenticated
 
 from market.models import GoldPriceSnapshot, GoldPriceConfig
 
-from .models import Wallet, BuyOrder, SellOrder
+from .models import Wallet, BuyOrder, SellOrder, WalletTransaction
 from .services import WalletEngine, InventoryEngine
-
 
 # -----------------------------
 # BUY — LOCK
@@ -22,6 +21,10 @@ class BuyLockView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        
+        user = request.user
+        wallet = user.wallet
+
         amount_pkr = Decimal(request.data.get("amount_pkr"))
 
         config = GoldPriceConfig.load()
@@ -29,7 +32,10 @@ class BuyLockView(APIView):
         fee_pct = config.buy_fee_percentage
 
         if amount_pkr < min_buy:
-            return Response({"error": f"Minimum buy amount is {min_buy} PKR"}, status=400)
+            return Response(
+                {"error": f"Minimum buy amount is {min_buy} PKR"},
+                status=400
+            )
 
         snapshot = GoldPriceSnapshot.objects.latest("timestamp")
         price = snapshot.pkr_per_gram_final
@@ -38,11 +44,12 @@ class BuyLockView(APIView):
         fee_pkr = amount_pkr * fee_pct / 100
         total_payable = amount_pkr + fee_pkr
 
+        # Reserve inventory BEFORE creating order
         InventoryEngine.reserve(grams)
 
         order = BuyOrder.objects.create(
-            user=request.user,
-            wallet=request.user.wallet,
+            user=user,
+            wallet=wallet,
             gold_quantity_grams=grams,
             locked_price_per_gram=price,
             fee_pkr=fee_pkr,
@@ -84,8 +91,8 @@ class BuyConfirmView(APIView):
             order.save()
             return Response({"error": "Order expired"}, status=400)
 
-        InventoryEngine.release(order.soft_allocated_grams)
         InventoryEngine.reduce_total(order.gold_quantity_grams)
+        InventoryEngine.release(order.soft_allocated_grams)
 
         WalletEngine.credit(order.wallet, order.gold_quantity_grams, reference=order.order_token)
 
@@ -107,26 +114,35 @@ class SellLockView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        grams = Decimal(request.data.get("sell_grams"))
-        wallet = request.user.wallet
 
+        user = request.user
+        wallet = user.wallet
+
+        # Extract grams to sell
+        grams = Decimal(request.data.get("sell_grams"))
+
+        # Validate available gold
         if wallet.gold_balance_grams < grams:
             return Response({"error": "Not enough gold to sell"}, status=400)
 
+        # Load current config and pricing
         config = GoldPriceConfig.load()
         fee_pct = config.sell_fee_percentage
 
         snapshot = GoldPriceSnapshot.objects.latest("timestamp")
         price = snapshot.pkr_per_gram_final
 
+        # Calculate PKR values
         gross_pkr = grams * price
         fee_pkr = gross_pkr * fee_pct / 100
         net_pkr = gross_pkr - fee_pkr
 
+        # Soft debit (hold) the gold before creating order
         WalletEngine.debit(wallet, grams, reference="soft_sell_hold")
 
+        # Create sell order
         order = SellOrder.objects.create(
-            user=request.user,
+            user=user,
             wallet=wallet,
             gold_quantity_grams=grams,
             soft_allocated_grams=grams,
@@ -139,6 +155,7 @@ class SellLockView(APIView):
             order_token=str(uuid4()),
         )
 
+        # Return response
         return Response({
             "order_token": order.order_token,
             "sell_grams": str(grams),
@@ -179,3 +196,23 @@ class SellConfirmView(APIView):
             "status": "success",
             "net_pkr": str(order.total_payable_pkr),
         })
+
+class WalletBalanceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        wallet = request.user.wallet
+        return Response({
+            "balance_grams": str(wallet.gold_balance_grams),
+            "locked_grams": "0",
+        })
+
+class WalletLedgerView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tx = WalletTransaction.objects.filter(
+            wallet=request.user.wallet
+        ).order_by("-timestamp")
+
+        return Response(list(tx.values()))

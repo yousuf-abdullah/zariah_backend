@@ -89,7 +89,7 @@ class BuyOrder(models.Model):
     soft_allocated_grams = models.DecimalField(max_digits=20, decimal_places=8, default=0)
 
     snapshot_reference = models.ForeignKey(
-        "market.GGoldPriceSnapshot",
+        "market.GoldPriceSnapshot",
         on_delete=models.SET_NULL,
         null=True,
         blank=True

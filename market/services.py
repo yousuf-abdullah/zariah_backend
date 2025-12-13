@@ -77,7 +77,7 @@ class GoldPriceService:
         pkr_per_tola = pkr_per_gram * self.GRAM_PER_TOLA
 
         # Apply margins
-        config = GoldPriceConfig.get_solo()
+        config = GoldPriceConfig.load()
         safeguard = (Decimal("1.00") + config.safeguard_margin / Decimal("100"))
         spread = (Decimal("1.00") + config.spread_margin / Decimal("100"))
 
