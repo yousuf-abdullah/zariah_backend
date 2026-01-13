@@ -9,6 +9,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.permissions import IsAuthenticated
+
 from market.models import GoldPriceSnapshot, GoldPriceConfig
 
 from .models import Wallet, BuyOrder, SellOrder, WalletTransaction
@@ -18,6 +21,7 @@ from .services import WalletEngine, InventoryEngine
 # BUY — LOCK
 # -----------------------------
 class BuyLockView(APIView):
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -76,9 +80,19 @@ class BuyLockView(APIView):
 # BUY — CONFIRM
 # -----------------------------
 class BuyConfirmView(APIView):
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+
+        idempotency_key = request.headers.get("Idempotency-Key")
+
+        if not idempotency_key:
+            return Response(
+                {"error": "Idempotency-Key header is required"},
+                status=400
+            )
+
         token = request.data.get("order_token")
         order = get_object_or_404(BuyOrder, order_token=token)
 
@@ -111,6 +125,7 @@ class BuyConfirmView(APIView):
 # SELL — LOCK
 # -----------------------------
 class SellLockView(APIView):
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -171,6 +186,7 @@ class SellLockView(APIView):
 # SELL — CONFIRM
 # -----------------------------
 class SellConfirmView(APIView):
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -198,6 +214,7 @@ class SellConfirmView(APIView):
         })
 
 class WalletBalanceView(APIView):
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -208,6 +225,7 @@ class WalletBalanceView(APIView):
         })
 
 class WalletLedgerView(APIView):
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
