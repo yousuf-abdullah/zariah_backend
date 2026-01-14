@@ -8,7 +8,7 @@ User = get_user_model()
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "username", "email", "phone_number", "is_kyc_bypassed"]
+        fields = ["id", "username", "email", "phone", "is_kyc_bypassed"]
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -16,7 +16,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["username", "email", "phone_number", "password"]
+        fields = ["username", "email", "phone", "password"]
 
     def create(self, validated_data):
         password = validated_data.pop("password")

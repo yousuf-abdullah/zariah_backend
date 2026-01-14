@@ -1,37 +1,54 @@
+# config/settings.py
+
 from pathlib import Path
 from datetime import timedelta
-import environ
 import os
+import environ
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
+# ----------------------------
+# Base / Environment
+# ----------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Initialise environment variables
 env = environ.Env(
-    DEBUG=(bool, False)  # default DEBUG to False for safety
+    # Defaults (safe)
+    DJANGO_ENV=(str, "local"),     # local | staging | production
+    DEBUG=(bool, False),
 )
 
-# Read .env file from project root
-environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
+# Read .env if present
+# (Keep .env OUT of git; server should set real env vars too)
+env_file = os.path.join(BASE_DIR, ".env")
+if os.path.exists(env_file):
+    environ.Env.read_env(env_file)
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
+DJANGO_ENV = env("DJANGO_ENV").lower()
 
-# SECURITY WARNING: keep the secret key used in production secret!
+# Debug defaults: True locally, False otherwise (unless explicitly set)
+if DJANGO_ENV == "local":
+    DEBUG = env.bool("DEBUG", default=True)
+else:
+    DEBUG = env.bool("DEBUG", default=False)
+
+# Security key
 SECRET_KEY = env("SECRET_KEY")
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env("DEBUG")
+# ----------------------------
+# Hosts / Origins
+# ----------------------------
+if DJANGO_ENV == "local":
+    ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+    CSRF_TRUSTED_ORIGINS = []
+else:
+    # Set these on server as env vars, e.g.:
+    # ALLOWED_HOSTS=api.zariah.pk,tea-5cd2471yxr
+    # CSRF_TRUSTED_ORIGINS=https://api.zariah.pk,https://admin.zariah.pk
+    ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost"])
+    CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
-ALLOWED_HOSTS = [
-    "127.0.0.1",
-    "localhost",
-    "tea-5cd2471yxr",   # lowercase
-]
-
-
-# Application definition
-
+# ----------------------------
+# Apps
+# ----------------------------
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -39,6 +56,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+
     "django_apscheduler",
 
     # Third-party
@@ -52,7 +70,7 @@ INSTALLED_APPS = [
     "wallet.apps.WalletConfig",
     "market",
 
-    # JWT
+    # JWT blacklist
     "rest_framework_simplejwt.token_blacklist",
 ]
 
@@ -85,57 +103,59 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
+# ----------------------------
+# Database (SQLite local, Postgres server)
+# ----------------------------
+if DJANGO_ENV == "local":
+    # Force SQLite locally (no Postgres required)
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+else:
+    # Server MUST provide DATABASE_URL, e.g.:
+    # DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DBNAME
+    DATABASES = {
+        "default": env.db("DATABASE_URL")
+    }
+    # Optional: keep connections open
+    DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=600)
 
-# Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-
-DATABASES = {
-    "default": env.db(
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}"
-    )
-}
-
+# ----------------------------
 # Password validation
-# https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
-
+# ----------------------------
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
-    },
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-
+# ----------------------------
 # Internationalization
-# https://docs.djangoproject.com/en/5.2/topics/i18n/
-
+# ----------------------------
 LANGUAGE_CODE = "en-us"
-
 TIME_ZONE = "Asia/Karachi"
-
 USE_I18N = True
-
 USE_TZ = True
 
-
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
-
+# ----------------------------
+# Static / Media
+# ----------------------------
 STATIC_URL = "static/"
 
-# Default primary key field type
-# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
+# On server, you generally want a STATIC_ROOT for collectstatic
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+# ----------------------------
+# Auth / DRF / JWT
+# ----------------------------
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-
 AUTH_USER_MODEL = "accounts.User"
 
 REST_FRAMEWORK = {
@@ -161,6 +181,25 @@ SIMPLE_JWT = {
     "USER_ID_CLAIM": "user_id",
 }
 
-# APScheduler settings
+# ----------------------------
+# APScheduler
+# ----------------------------
 APSCHEDULER_DATETIME_FORMAT = "N j, Y, f:s a"
 APSCHEDULER_RUN_NOW_TIMEOUT = 25  # seconds
+
+# ----------------------------
+# Production security toggles
+# ----------------------------
+if DJANGO_ENV != "local":
+    # Turn these on when you're behind HTTPS (recommended)
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+    SESSION_COOKIE_SECURE = env.bool("SESSION_COOKIE_SECURE", default=True)
+    CSRF_COOKIE_SECURE = env.bool("CSRF_COOKIE_SECURE", default=True)
+
+    SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=False)  # set True when HTTPS is confirmed
+
+    # HSTS (enable only after HTTPS works correctly)
+    SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=0)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = env.bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True)
+    SECURE_HSTS_PRELOAD = env.bool("SECURE_HSTS_PRELOAD", default=False)
